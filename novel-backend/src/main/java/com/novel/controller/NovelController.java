@@ -5,7 +5,9 @@ import com.novel.model.Novel;
 import com.novel.repository.DataRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -45,7 +47,7 @@ public class NovelController {
     public Map<String, Object> getNovelDetail(@PathVariable Long id) {
         Novel novel = dataRepository.findNovelById(id);
         if (novel == null) {
-            throw new RuntimeException("Novel not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Novel not found");
         }
         List<Chapter> chapters = dataRepository.findChaptersByNovelId(id);
 
@@ -61,13 +63,44 @@ public class NovelController {
         return dataRepository.findChaptersByNovelId(id);
     }
 
+    @PutMapping("/novels/{id}/chapters/order")
+    @Operation(summary = "Reorder Chapters (atomic: all-or-nothing)")
+    public Map<String, Object> reorderChapters(@PathVariable Long id,
+            @RequestBody Map<String, List<Long>> body) {
+        Novel novel = dataRepository.findNovelById(id);
+        if (novel == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Novel not found");
+        }
+        List<Long> chapterIds = body != null ? body.get("chapterIds") : null;
+
+        List<Chapter> reordered;
+        try {
+            // Repository 内部先校验后写入：失败时抛出异常且原顺序保持不变
+            reordered = dataRepository.reorderChapters(id, chapterIds);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("chapters", reordered);
+        return response;
+    }
+
     @GetMapping("/chapters/{id}")
-    @Operation(summary = "Get Chapter Content")
-    public Chapter getChapter(@PathVariable Long id) {
+    @Operation(summary = "Get Chapter Content (with prev/next navigation)")
+    public Map<String, Object> getChapter(@PathVariable Long id) {
         Chapter chapter = dataRepository.findChapterById(id);
         if (chapter == null) {
-            throw new RuntimeException("Chapter not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found");
         }
-        return chapter;
+        // 上一章/下一章基于最新 orderNo 计算，章节重排后导航自动跟随
+        Chapter prev = dataRepository.findPrevChapter(chapter);
+        Chapter next = dataRepository.findNextChapter(chapter);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("chapter", chapter);
+        response.put("prevChapterId", prev != null ? prev.getId() : null);
+        response.put("nextChapterId", next != null ? next.getId() : null);
+        return response;
     }
 }

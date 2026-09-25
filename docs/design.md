@@ -24,8 +24,15 @@
 ## 4. 接口设计 (RESTful API)
 - `GET /api/novels`: 获取小说列表（支持分页与搜索）。
 - `GET /api/novels/{id}`: 获取小说详细信息及章节目录。
-- `GET /api/chapters/{id}`: 获取具体章节正文内容。
+- `GET /api/novels/{id}/chapters`: 获取小说章节目录（按 orderNo 升序）。
+- `PUT /api/novels/{id}/chapters/order`: 调整章节顺序。请求体 `{"chapterIds": [3,1,2]}` 必须覆盖该小说全部章节；服务端先校验后写入，**原子生效**——校验失败（400）时原顺序完全不变，杜绝半更新。
+- `GET /api/chapters/{id}`: 获取章节正文，并返回 `prevChapterId` / `nextChapterId`（基于最新 orderNo 计算），阅读页「上一章 / 下一章」导航随排序调整自动跟随。
 
 ## 5. 数据模型
 - **Novel (小说)**: ID, Title, Description, CoverUrl, CreatedAt.
 - **Chapter (章节)**: ID, NovelId, Title, OrderNo, Content, CreatedAt.
+
+## 6. 章节排序交互设计
+- 详情页目录提供「调整顺序」模式：作者通过上移/下移把番外、序章或错位章节归位，所有调整仅在本地暂存。
+- 排序模式下常驻警示条，保存前弹出确认框，明确提示"会影响读者的阅读顺序"。
+- 保存成功以服务端返回为准；保存失败时前端整体回滚到进入排序时的快照顺序，章节列表不会出现半更新状态。

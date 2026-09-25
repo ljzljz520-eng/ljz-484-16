@@ -86,4 +86,66 @@ public class DataRepository {
         public Chapter findChapterById(Long id) {
                 return chapters.get(id);
         }
+
+        /**
+         * 按 orderNo 查找指定章节的上一章（阅读页导航用，跟随最新排序）。
+         */
+        public Chapter findPrevChapter(Chapter chapter) {
+                return chapters.values().stream()
+                                .filter(c -> c.getNovelId().equals(chapter.getNovelId()))
+                                .filter(c -> c.getOrderNo() < chapter.getOrderNo())
+                                .max(Comparator.comparing(Chapter::getOrderNo))
+                                .orElse(null);
+        }
+
+        /**
+         * 按 orderNo 查找指定章节的下一章（阅读页导航用，跟随最新排序）。
+         */
+        public Chapter findNextChapter(Chapter chapter) {
+                return chapters.values().stream()
+                                .filter(c -> c.getNovelId().equals(chapter.getNovelId()))
+                                .filter(c -> c.getOrderNo() > chapter.getOrderNo())
+                                .min(Comparator.comparing(Chapter::getOrderNo))
+                                .orElse(null);
+        }
+
+        /**
+         * 原子化重排某本小说的章节顺序。
+         *
+         * <p>
+         * 先在内存中完成全部校验，校验通过后才统一写入新的 orderNo；
+         * 任何校验失败都会在修改数据之前抛出异常，保证原顺序不被破坏，
+         * 不会出现"改了一半"的中间状态。
+         * </p>
+         *
+         * @param novelId    小说 ID
+         * @param chapterIds 期望的完整章节 ID 列表（按新顺序排列，必须覆盖该小说全部章节）
+         * @return 重排后的章节列表（按 orderNo 升序）
+         * @throws IllegalArgumentException 当提交列表与现有章节不一致时
+         */
+        public synchronized List<Chapter> reorderChapters(Long novelId, List<Long> chapterIds) {
+                List<Chapter> existing = findChaptersByNovelId(novelId);
+
+                // —— 校验阶段：失败时直接抛出，此时任何数据都尚未被修改 ——
+                if (chapterIds == null || chapterIds.size() != existing.size()) {
+                        throw new IllegalArgumentException("章节列表不完整，请刷新目录后重试");
+                }
+                Set<Long> incomingIds = new HashSet<>(chapterIds);
+                if (incomingIds.size() != chapterIds.size()) {
+                        throw new IllegalArgumentException("章节列表中存在重复章节");
+                }
+                Map<Long, Chapter> existingById = existing.stream()
+                                .collect(Collectors.toMap(Chapter::getId, c -> c));
+                for (Long id : chapterIds) {
+                        if (id == null || !existingById.containsKey(id)) {
+                                throw new IllegalArgumentException("章节列表与当前小说不匹配，请刷新目录后重试");
+                        }
+                }
+
+                // —— 应用阶段：校验全部通过后才写入，保证要么全部成功、要么完全不变 ——
+                for (int i = 0; i < chapterIds.size(); i++) {
+                        existingById.get(chapterIds.get(i)).setOrderNo(i + 1);
+                }
+                return findChaptersByNovelId(novelId);
+        }
 }

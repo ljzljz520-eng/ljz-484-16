@@ -10,15 +10,24 @@
          </div>
          
          <div class="footer-controls" v-if="chapter">
-             <!-- Navigation logic could be added here if we fetched next/prev IDs -->
-             <el-button class="nav-chapter-btn glass-panel" @click="goBack">返回目录</el-button>
+             <el-button
+                 class="nav-chapter-btn glass-panel"
+                 :disabled="!prevChapterId"
+                 @click="goToChapter(prevChapterId)"
+             >上一章</el-button>
+             <el-button class="nav-chapter-btn glass-panel" @click="goToToc">返回目录</el-button>
+             <el-button
+                 class="nav-chapter-btn glass-panel"
+                 :disabled="!nextChapterId"
+                 @click="goToChapter(nextChapterId)"
+             >下一章</el-button>
          </div>
      </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ArrowLeft, Setting } from '@element-plus/icons-vue'
@@ -26,13 +35,19 @@ import { ArrowLeft, Setting } from '@element-plus/icons-vue'
 const route = useRoute()
 const router = useRouter()
 const chapter = ref(null)
+const prevChapterId = ref(null)
+const nextChapterId = ref(null)
 const loading = ref(true)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api'
 
-const fetchChapter = async () => {
+const fetchChapter = async (id) => {
+    loading.value = true
     try {
-        const res = await axios.get(`${API_URL}/chapters/${route.params.id}`)
-        chapter.value = res.data
+        const res = await axios.get(`${API_URL}/chapters/${id}`)
+        // 后端基于最新章节顺序返回上一章/下一章，重排后导航自动跟随
+        chapter.value = res.data.chapter
+        prevChapterId.value = res.data.prevChapterId
+        nextChapterId.value = res.data.nextChapterId
     } catch(err) {
         console.error(err)
     } finally {
@@ -45,15 +60,29 @@ const paragraphs = computed(() => {
     return chapter.value.content.split('\n')
 })
 
-const goBack = () => {
-    if(window.history.length > 1) {
-        router.back()
+const goToChapter = (id) => {
+    if (id) {
+        router.push('/chapter/' + id)
+    }
+}
+
+const goToToc = () => {
+    if (chapter.value && chapter.value.novelId) {
+        router.push('/novel/' + chapter.value.novelId)
     } else {
         router.push('/')
     }
 }
 
-onMounted(fetchChapter)
+// 上一章/下一章跳转时组件被复用，监听路由参数重新加载并回到顶部
+watch(() => route.params.id, (newId, oldId) => {
+    if (newId && newId !== oldId && route.name === 'Read') {
+        fetchChapter(newId)
+        window.scrollTo({ top: 0 })
+    }
+})
+
+onMounted(() => fetchChapter(route.params.id))
 </script>
 
 <style scoped>
@@ -98,19 +127,30 @@ onMounted(fetchChapter)
     margin-top: 60px;
     display: flex;
     justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.footer-controls .el-button + .el-button {
+    margin-left: 0; /* 覆盖 Element Plus 默认按钮间距，统一由 gap 控制 */
 }
 
 .nav-chapter-btn {
-    padding: 20px 40px;
+    padding: 20px 32px;
     background: transparent;
     color: #4b5563;
     border: 1px solid rgba(0, 0, 0, 0.1);
     transition: all 0.3s;
 }
 
-.nav-chapter-btn:hover {
+.nav-chapter-btn:hover:not(:disabled) {
     background: rgba(0, 0, 0, 0.05);
     border-color: var(--primary-color);
     color: var(--primary-color);
+}
+
+.nav-chapter-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 </style>
