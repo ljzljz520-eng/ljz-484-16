@@ -1,5 +1,7 @@
 package com.novel.repository;
 
+import com.novel.exception.BadRequestException;
+import com.novel.exception.ResourceNotFoundException;
 import com.novel.model.Chapter;
 import com.novel.model.Novel;
 import jakarta.annotation.PostConstruct;
@@ -18,6 +20,12 @@ public class DataRepository {
         private final AtomicLong novelIdGenerator = new AtomicLong(1);
         private final AtomicLong chapterIdGenerator = new AtomicLong(1);
 
+        /**
+         * Per-novel locks so two concurrent reorders of the same novel cannot
+         * interleave their writes. Different novels can still be reordered in parallel.
+         */
+        private final Map<Long, Object> reorderLocks = new ConcurrentHashMap<>();
+
         @PostConstruct
         public void init() {
                 // Seeding Data
@@ -29,11 +37,17 @@ public class DataRepository {
                 novels.put(novel1.getId(), novel1);
 
                 chapters.put(chapterIdGenerator.get(), new Chapter(chapterIdGenerator.getAndIncrement(), novel1.getId(),
+                                "序章：绿色的黎明", 0, "在一切开始之前，屏幕上只有一行不断闪烁的光标。", LocalDateTime.now()));
+                chapters.put(chapterIdGenerator.get(), new Chapter(chapterIdGenerator.getAndIncrement(), novel1.getId(),
                                 "第一章：Hello World", 1, "他醒来时，发现眼前只有绿色的代码流...", LocalDateTime.now()));
                 chapters.put(chapterIdGenerator.get(), new Chapter(chapterIdGenerator.getAndIncrement(), novel1.getId(),
                                 "第二章：变量声明", 2, "“你是谁？”面前的机器人冷冷地问道。“Define me.”他回答。", LocalDateTime.now()));
+                // A side story (番外) initially misplaced in the middle of the main storyline;
+                // authors can move it to the end via chapter reordering.
                 chapters.put(chapterIdGenerator.get(), new Chapter(chapterIdGenerator.getAndIncrement(), novel1.getId(),
-                                "第三章：循环陷阱", 3, "时间仿佛陷入了死循环，他必须找到 break 的条件。", LocalDateTime.now()));
+                                "番外：穿越前的世界", 3, "那还是一个普通的周五晚上，他正准备下班……", LocalDateTime.now()));
+                chapters.put(chapterIdGenerator.get(), new Chapter(chapterIdGenerator.getAndIncrement(), novel1.getId(),
+                                "第三章：循环陷阱", 4, "时间仿佛陷入了死循环，他必须找到 break 的条件。", LocalDateTime.now()));
 
                 Novel novel2 = new Novel(novelIdGenerator.getAndIncrement(),
                                 "灵气复苏时代的架构师",
@@ -85,5 +99,122 @@ public class DataRepository {
 
         public Chapter findChapterById(Long id) {
                 return chapters.get(id);
+        }
+
+        /**
+         * Atomically reorder all chapters of a novel.
+         *
+         * The {@code orderedIds} must contain exactly the set of the novel's chapter IDs,
+         * each appearing once. Order numbers are rewritten as contiguous values starting
+         * from 1, so the catalogue and the reading prev/next navigation (which both rely
+         * on orderNo) change consistently.
+         *
+         * The method either fully succeeds or fully fails: every validation runs before
+         * any mutation, and if anything goes wrong while applying the new order, the
+         * original order numbers are restored. A half-updated chapter list can never be
+         * observed.
+         *
+         * @return the chapters in the new order after a successful update
+         */
+        public List<Chapter> reorderChapters(Long novelId, List<Long> orderedIds) {
+                if (novels.get(novelId) == null) {
+                        throw new ResourceNotFoundException("小说不存在");
+                }
+                if (orderedIds == null || orderedIds.isEmpty()) {
+                        throw new BadRequestException("章节顺序不能为空");
+                }
+
+                List<Chapter> novelChapters = findChaptersByNovelId(novelId);
+
+                // ---- Phase 1: validate everything BEFORE touching any data ----
+                if (orderedIds.size() != novelChapters.size()) {
+                        throw new BadRequestException("章节数量不匹配，请提供该书全部章节的完整顺序");
+                }
+
+                Map<Long, Chapter> chaptersById = new HashMap<>();
+                for (Chapter chapter : novelChapters) {
+                        chaptersById.put(chapter.getId(), chapter);
+                }
+
+                Set<Long> seen = new HashSet<>();
+                for (Long chapterId : orderedIds) {
+                        if (chapterId == null) {
+                                throw new BadRequestException("章节 ID 不能为空");
+                        }
+                        if (!seen.add(chapterId)) {
+                                throw new BadRequestException("章节 ID 重复：" + chapterId);
+                        }
+                        if (!chaptersById.containsKey(chapterId)) {
+                                throw new BadRequestException("章节不属于当前小说或不存在：" + chapterId);
+                        }
+                }
+                if (seen.size() != novelChapters.size()) {
+                        throw new BadRequestException("章节集合不完整，无法调整顺序");
+                }
+
+                Object lock = reorderLocks.computeIfAbsent(novelId, key -> new Object());
+                synchronized (lock) {
+                        // ---- Phase 2: snapshot the current order for rollback ----
+                        Map<Long, Integer> originalOrder = new HashMap<>();
+                        for (Chapter chapter : novelChapters) {
+                                originalOrder.put(chapter.getId(), chapter.getOrderNo());
+                        }
+
+                        try {
+                                // ---- Phase 3: apply the new contiguous order ----
+                                for (int i = 0; i < orderedIds.size(); i++) {
+                                        Chapter chapter = chaptersById.get(orderedIds.get(i));
+                                        if (chapter == null) {
+                                                throw new IllegalStateException("章节在保存过程中丢失");
+                                        }
+                                        chapter.setOrderNo(i + 1);
+                                }
+                        } catch (RuntimeException ex) {
+                                // Rollback so a failed save never leaves a partially updated list.
+                                for (Map.Entry<Long, Integer> entry : originalOrder.entrySet()) {
+                                        Chapter chapter = chapters.get(entry.getKey());
+                                        if (chapter != null) {
+                                                chapter.setOrderNo(entry.getValue());
+                                        }
+                                }
+                                throw ex;
+                        }
+                }
+
+                return findChaptersByNovelId(novelId);
+        }
+
+        /**
+         * Find the previous and next chapters of {@code chapterId} according to orderNo.
+         * Null is returned for a neighbour when the given chapter sits at an edge of
+         * the book. Reading navigation therefore always follows the latest saved order.
+         */
+        public Chapter[] findNeighborChapters(Long chapterId) {
+                Chapter current = chapters.get(chapterId);
+                if (current == null) {
+                        return null;
+                }
+
+                Chapter previous = null;
+                Chapter next = null;
+                for (Chapter candidate : chapters.values()) {
+                        if (!candidate.getNovelId().equals(current.getNovelId())
+                                        || candidate.getId().equals(chapterId)) {
+                                continue;
+                        }
+                        if (candidate.getOrderNo() != null && current.getOrderNo() != null) {
+                                if (candidate.getOrderNo() < current.getOrderNo()
+                                                && (previous == null
+                                                                || candidate.getOrderNo() > previous.getOrderNo())) {
+                                        previous = candidate;
+                                }
+                                if (candidate.getOrderNo() > current.getOrderNo()
+                                                && (next == null
+                                                                || candidate.getOrderNo() < next.getOrderNo())) {
+                                        next = candidate;
+                                }
+                        }
+                }
+                return new Chapter[] { previous, next };
         }
 }

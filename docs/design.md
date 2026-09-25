@@ -25,6 +25,8 @@
 - `GET /api/novels`: 获取小说列表（支持分页与搜索）。
 - `GET /api/novels/{id}`: 获取小说详细信息及章节目录。
 - `GET /api/chapters/{id}`: 获取具体章节正文内容。
+- `PUT /api/novels/{id}/chapters/reorder`: 作者调整章节顺序（请求体为按新阅读顺序排列的完整章节 ID 列表）。整体校验通过后一次性重写 `orderNo`，任一环节失败则回滚为原顺序，不会出现半更新列表。
+- `GET /api/chapters/{id}/navigation`: 获取当前章节的上一章 / 下一章（依据最新保存的 `orderNo`），阅读导航随排序结果同步变化。
 
 ## 5. 数据模型
 - **Novel (小说)**: ID, Title, Description, CoverUrl, CreatedAt.

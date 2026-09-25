@@ -1,5 +1,8 @@
 package com.novel.controller;
 
+import com.novel.dto.ChapterNavItem;
+import com.novel.dto.ReorderChaptersRequest;
+import com.novel.exception.ResourceNotFoundException;
 import com.novel.model.Chapter;
 import com.novel.model.Novel;
 import com.novel.repository.DataRepository;
@@ -45,7 +48,7 @@ public class NovelController {
     public Map<String, Object> getNovelDetail(@PathVariable Long id) {
         Novel novel = dataRepository.findNovelById(id);
         if (novel == null) {
-            throw new RuntimeException("Novel not found");
+            throw new ResourceNotFoundException("Novel not found");
         }
         List<Chapter> chapters = dataRepository.findChaptersByNovelId(id);
 
@@ -66,8 +69,41 @@ public class NovelController {
     public Chapter getChapter(@PathVariable Long id) {
         Chapter chapter = dataRepository.findChapterById(id);
         if (chapter == null) {
-            throw new RuntimeException("Chapter not found");
+            throw new ResourceNotFoundException("Chapter not found");
         }
         return chapter;
+    }
+
+    @PutMapping("/novels/{id}/chapters/reorder")
+    @Operation(summary = "Reorder Chapters (author)")
+    public Map<String, Object> reorderChapters(@PathVariable Long id,
+                                               @RequestBody ReorderChaptersRequest request) {
+        List<Long> chapterIds = request == null ? null : request.getChapterIds();
+        List<Chapter> chapters = dataRepository.reorderChapters(id, chapterIds);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("message", "章节顺序已保存");
+        response.put("chapters", chapters);
+        return response;
+    }
+
+    @GetMapping("/chapters/{id}/navigation")
+    @Operation(summary = "Get Previous/Next Chapter Navigation")
+    public Map<String, Object> getChapterNavigation(@PathVariable Long id) {
+        Chapter chapter = dataRepository.findChapterById(id);
+        if (chapter == null) {
+            throw new ResourceNotFoundException("Chapter not found");
+        }
+
+        Chapter[] neighbors = dataRepository.findNeighborChapters(id);
+        Chapter previous = neighbors == null ? null : neighbors[0];
+        Chapter next = neighbors == null ? null : neighbors[1];
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("current", new ChapterNavItem(chapter));
+        response.put("previous", previous == null ? null : new ChapterNavItem(previous));
+        response.put("next", next == null ? null : new ChapterNavItem(next));
+        response.put("novelId", chapter.getNovelId());
+        return response;
     }
 }
